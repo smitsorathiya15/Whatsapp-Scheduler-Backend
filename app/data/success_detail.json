@@ -1,0 +1,127 @@
+{
+    "health_check_success": {
+        "detail_type": "Success",
+        "msg": "Health check ok.",
+        "reason": "The API is running and reachable."
+    },
+    "keepalive_success": {
+        "detail_type": "Success",
+        "msg": "Service is alive.",
+        "reason": "Keepalive ping received."
+    },
+    "user_register_success": {
+        "detail_type": "Success",
+        "msg": "User registered successfully.",
+        "reason": "The user account has been created."
+    },
+    "user_login_success": {
+        "detail_type": "Success",
+        "msg": "Login successful.",
+        "reason": "Credentials validated and access token generated."
+    },
+    "user_profile_success": {
+        "detail_type": "Success",
+        "msg": "User profile retrieved successfully.",
+        "reason": "The user profile was fetched from the database."
+    },
+    "group_list_success": {
+        "detail_type": "Success",
+        "msg": "Groups retrieved successfully.",
+        "reason": "All active groups were fetched from the database."
+    },
+    "group_create_success": {
+        "detail_type": "Success",
+        "msg": "Group created successfully.",
+        "reason": "The WhatsApp group was saved to the database."
+    },
+    "group_retrieve_success": {
+        "detail_type": "Success",
+        "msg": "Group retrieved successfully.",
+        "reason": "The group record was fetched from the database."
+    },
+    "group_update_success": {
+        "detail_type": "Success",
+        "msg": "Group updated successfully.",
+        "reason": "The group record was updated in the database."
+    },
+    "group_delete_success": {
+        "detail_type": "Success",
+        "msg": "Group deleted successfully.",
+        "reason": "The group was soft-deleted from the system."
+    },
+    "template_list_success": {
+        "detail_type": "Success",
+        "msg": "Templates retrieved successfully.",
+        "reason": "All message templates were fetched from the database."
+    },
+    "template_create_success": {
+        "detail_type": "Success",
+        "msg": "Template created successfully.",
+        "reason": "The message template was saved to the database."
+    },
+    "template_retrieve_success": {
+        "detail_type": "Success",
+        "msg": "Template retrieved successfully.",
+        "reason": "The template record was fetched from the database."
+    },
+    "template_update_success": {
+        "detail_type": "Success",
+        "msg": "Template updated successfully.",
+        "reason": "The template record was updated in the database."
+    },
+    "template_delete_success": {
+        "detail_type": "Success",
+        "msg": "Template deleted successfully.",
+        "reason": "The template was removed from the database."
+    },
+    "schedule_list_success": {
+        "detail_type": "Success",
+        "msg": "Schedules retrieved successfully.",
+        "reason": "All schedules were fetched from the database."
+    },
+    "schedule_create_success": {
+        "detail_type": "Success",
+        "msg": "Schedule created successfully.",
+        "reason": "The schedule was saved to the database."
+    },
+    "schedule_retrieve_success": {
+        "detail_type": "Success",
+        "msg": "Schedule retrieved successfully.",
+        "reason": "The schedule record was fetched from the database."
+    },
+    "schedule_update_success": {
+        "detail_type": "Success",
+        "msg": "Schedule updated successfully.",
+        "reason": "The schedule record was updated in the database."
+    },
+    "schedule_delete_success": {
+        "detail_type": "Success",
+        "msg": "Schedule deleted successfully.",
+        "reason": "The schedule was removed from the database."
+    },
+    "whatsapp_status_success": {
+        "detail_type": "Success",
+        "msg": "WhatsApp status retrieved.",
+        "reason": "The current WhatsApp session state was returned."
+    },
+    "whatsapp_qr_success": {
+        "detail_type": "Success",
+        "msg": "QR code retrieved.",
+        "reason": "The QR code image was captured from the browser."
+    },
+    "whatsapp_linked_success": {
+        "detail_type": "Success",
+        "msg": "WhatsApp linked successfully.",
+        "reason": "The QR scan was detected and the session is now active."
+    },
+    "whatsapp_already_linked": {
+        "detail_type": "Success",
+        "msg": "WhatsApp already linked.",
+        "reason": "An active WhatsApp session already exists for your account."
+    },
+    "whatsapp_unlink_success": {
+        "detail_type": "Success",
+        "msg": "WhatsApp unlinked successfully.",
+        "reason": "The WhatsApp session has been closed and removed for your account."
+    }
+}

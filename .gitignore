@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+waenv/
+venv/
+env/
+.venv/
+.env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# WhatsApp automation local data
+wa_profile/
+
+# Logs
+*.log
+logs/
+
+# Database
+*.sqlite
+*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+wa_profile/

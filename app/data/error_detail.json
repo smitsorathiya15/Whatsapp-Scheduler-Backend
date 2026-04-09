@@ -1,0 +1,37 @@
+{
+    "bad_request_error": {
+        "detail_type": "BadRequest",
+        "msg": "Bad request.",
+        "reason": "The request could not be processed."
+    },
+    "unauthorized_error": {
+        "detail_type": "Unauthorized",
+        "msg": "Unauthorized.",
+        "reason": "Authentication credentials were missing or invalid."
+    },
+    "forbidden_error": {
+        "detail_type": "Forbidden",
+        "msg": "Forbidden.",
+        "reason": "You do not have permission to perform this action."
+    },
+    "not_found_error": {
+        "detail_type": "NotFound",
+        "msg": "Not found.",
+        "reason": "The requested resource was not found."
+    },
+    "conflict_error": {
+        "detail_type": "Conflict",
+        "msg": "Conflict.",
+        "reason": "The request conflicts with the current state of the resource."
+    },
+    "validation_error": {
+        "detail_type": "ValidationError",
+        "msg": "Validation error.",
+        "reason": "Request validation failed."
+    },
+    "server_error": {
+        "detail_type": "ServerError",
+        "msg": "Internal server error.",
+        "reason": "An unexpected error occurred on the server."
+    }
+}
