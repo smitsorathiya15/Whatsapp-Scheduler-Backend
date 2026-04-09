@@ -56,52 +56,157 @@ class _UserSession:
                 return
             await asyncio.to_thread(self._start)
 
+    def _clear_locks(self, profile: Path) -> None:
+        """Retry several times to remove lock files that might be held by a closing process."""
+        for name in ["SingletonLock", "DevToolsActivePort", "lock"]:
+            p = profile / name
+            if not p.exists():
+                continue
+            for i in range(5):
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    else:
+                        os.remove(p)
+                    logger.debug("Successfully removed lock file: %s", name)
+                    break
+                except Exception as exc:
+                    if i == 4:
+                        logger.warning("Could not remove lock file %s after retries: %s", name, exc)
+                    time.sleep(0.2)
+
+    def _kill_stale_chrome(self, profile: Path) -> None:
+        """Kill any leftover Chrome processes using the same user-data-dir."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "where",
+                 "name='chrome.exe'", "get", "ProcessId,CommandLine"],
+                capture_output=True, text=True, timeout=10
+            )
+            profile_str = str(profile).replace("/", "\\")
+            for line in result.stdout.splitlines():
+                if profile_str in line or str(profile) in line:
+                    parts = line.strip().split()
+                    for part in parts:
+                        if part.isdigit():
+                            try:
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", part],
+                                    capture_output=True, timeout=5
+                                )
+                                logger.info("Killed stale Chrome PID %s", part)
+                            except Exception:
+                                pass
+        except Exception as exc:
+            logger.debug("Stale chrome check skipped: %s", exc)
+
+    def _build_options(self, profile: Path) -> Options:
+        """Build Chrome options with all stability flags."""
+        options = Options()
+        options.add_argument(f"--user-data-dir={profile}")
+
+        # ── Core stability flags ──────────────────────────────────────────
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-extensions")
+
+        # ── Prevent DevToolsActivePort crash ──────────────────────────────
+        options.add_argument("--remote-debugging-port=0")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-features=VizDisplayCompositor,TranslateUI")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-prompt-on-repost")
+        options.add_argument("--disable-client-side-phishing-detection")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--no-service-autorun")
+        options.add_argument("--force-color-profile=srgb")
+
+        # ── Anti-detection ────────────────────────────────────────────────
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+
+        # ── Headless mode ─────────────────────────────────────────────────
+        if settings.WA_HEADLESS:
+            options.add_argument("--headless=new")
+            options.add_argument("--window-size=1280,900")
+
+        return options
+
     def _start(self) -> None:
         profile = self._profile_path
         profile.mkdir(parents=True, exist_ok=True)
 
-        for name in ["SingletonLock", "DevToolsActivePort", "lock"]:
-            p = profile / name
-            if p.exists():
-                try:
-                    shutil.rmtree(p) if p.is_dir() else os.remove(p)
-                except Exception as exc:
-                    logger.warning("Could not remove lock file %s: %s", name, exc)
+        # Kill stale Chrome processes that may hold locks on this profile
+        self._kill_stale_chrome(profile)
+        time.sleep(1)
+        self._clear_locks(profile)
 
-        try:
-            options = Options()
-            options.add_argument(f"--user-data-dir={profile}")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument(
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option("useAutomationExtension", False)
+        max_attempts = 3
+        last_exc = None
 
-            if settings.WA_HEADLESS:
-                options.add_argument("--headless")
-                options.add_argument("--window-size=1280,900")
+        for attempt in range(1, max_attempts + 1):
+            try:
+                options = self._build_options(profile)
+                service = Service(ChromeDriverManager().install())
+                self._driver = webdriver.Chrome(service=service, options=options)
 
-            service = Service(ChromeDriverManager().install())
-            self._driver = webdriver.Chrome(service=service, options=options)
+                handles = self._driver.window_handles
+                if len(handles) > 1:
+                    self._driver.switch_to.window(handles[-1])
 
-            handles = self._driver.window_handles
-            if len(handles) > 1:
-                self._driver.switch_to.window(handles[-1])
+                self._driver.get("https://web.whatsapp.com")
+                logger.info(
+                    "Chrome started for user %s (attempt %d) — waiting 30s.",
+                    self.user_id, attempt,
+                )
+                time.sleep(30)
+                self._detect()
+                return  # success
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Chrome start attempt %d/%d failed for user %s: %s",
+                    attempt, max_attempts, self.user_id, exc,
+                )
+                # Clean up the failed driver
+                if self._driver:
+                    try:
+                        self._driver.quit()
+                    except Exception:
+                        pass
+                    self._driver = None
 
-            self._driver.get("https://web.whatsapp.com")
-            logger.info("Chrome started for user %s — waiting 30s.", self.user_id)
-            time.sleep(30)
-            self._detect()
-        except Exception as exc:
-            logger.error("Chrome start failed for user %s: %s", self.user_id, exc, exc_info=True)
-            self._driver = None
-            self.is_logged_in = False
+                if attempt < max_attempts:
+                    # Re-clean locks and wait before retrying
+                    self._kill_stale_chrome(profile)
+                    time.sleep(2)
+                    self._clear_locks(profile)
+                    time.sleep(1)
+
+        # All attempts exhausted
+        logger.error(
+            "Chrome start failed for user %s after %d attempts: %s",
+            self.user_id, max_attempts, last_exc, exc_info=True,
+        )
+        self._driver = None
+        self.is_logged_in = False
 
     def _detect(self) -> None:
         if self._driver is None:
@@ -157,17 +262,38 @@ class _UserSession:
             return None
         try:
             def _cap():
+                # ── 1. Check for 'Click to reload QR code' button ────────────────
+                for reload_sel in [
+                    'button span[data-testid="refresh-l"]',
+                    'div[data-testid="qrcode-reload-button"]',
+                    '#app .landing-wrapper button',
+                    'button[aria-label="Reload"]',
+                ]:
+                    btns = self._driver.find_elements(By.CSS_SELECTOR, reload_sel)
+                    if btns:
+                        try:
+                            btns[0].click()
+                            logger.info("Clicked QR reload button for user %s.", self.user_id)
+                            time.sleep(2)
+                            break
+                        except Exception:
+                            continue
+
+                # ── 2. Capture QR Canvas ──────────────────────────────────────────
                 for sel in [
                     'canvas[aria-label="Scan this QR code to link a device"]',
                     '.landing-main canvas',
+                    'div[data-testid="qrcode"] canvas',
                     'canvas',
                 ]:
                     for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
                         if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
                             return el.screenshot_as_png
+
+                # Fallback: debug screenshot
                 dbg = Path("debug_screenshot.png").resolve()
                 self._driver.save_screenshot(str(dbg))
-                logger.info("QR not found for user %s. Screenshot: %s", self.user_id, dbg)
+                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg)
                 return None
 
             png = await asyncio.to_thread(_cap)
@@ -192,13 +318,14 @@ class _UserSession:
                 return bool(
                     self._driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="chat-list"]') or
                     self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="3"]') or
-                    self._driver.find_elements(By.CSS_SELECTOR, 'div#pane-side')
+                    self._driver.find_elements(By.CSS_SELECTOR, 'div#pane-side') or
+                    self._driver.find_elements(By.CSS_SELECTOR, '[data-testid="intro-text"]')
                 )
             if await asyncio.to_thread(_check):
                 self.is_logged_in = True
                 logger.info("QR scanned — user %s linked.", self.user_id)
                 return True
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
         return False
 
     # ── Send ──────────────────────────────────────────────────────────────────
