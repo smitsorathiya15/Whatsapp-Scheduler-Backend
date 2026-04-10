@@ -29,6 +29,31 @@ from app.config.setting import settings
 logger = logging.getLogger(__name__)
 
 
+def _find_chrome_binary() -> Optional[str]:
+    """
+    Locate the Chrome binary.
+    Checks common Linux paths first, then falls back to settings override.
+    """
+    candidates = [
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]
+    override = getattr(settings, "WA_CHROME_BINARY", None)
+    if override:
+        candidates.insert(0, override)
+
+    for path in candidates:
+        if Path(path).exists():
+            logger.info("Found Chrome binary at: %s", path)
+            return path
+
+    logger.warning("Could not find Chrome binary in any standard location.")
+    return None
+
+
 # ── Per-user driver wrapper ────────────────────────────────────────────────────
 
 
@@ -61,61 +86,63 @@ class _UserSession:
             await asyncio.to_thread(self._start)
 
     def _clear_locks(self, profile: Path) -> None:
-        """Retry several times to remove lock files that might be held by a closing process."""
         for name in ["SingletonLock", "DevToolsActivePort", "lock"]:
             p = profile / name
             if not p.exists():
                 continue
             for i in range(5):
                 try:
-                    if p.is_dir():
-                        shutil.rmtree(p)
-                    else:
-                        os.remove(p)
-                    logger.debug("Successfully removed lock file: %s", name)
+                    shutil.rmtree(p) if p.is_dir() else os.remove(p)
+                    logger.debug("Removed lock file: %s", name)
                     break
                 except Exception as exc:
                     if i == 4:
-                        logger.warning("Could not remove lock file %s after retries: %s", name, exc)
+                        logger.warning("Could not remove lock %s: %s", name, exc)
                     time.sleep(0.2)
 
     def _kill_stale_chrome(self, profile: Path) -> None:
-        """Kill any leftover Chrome processes using the same user-data-dir."""
+        """Kill stale Chrome processes using this profile (Linux + Windows)."""
         try:
             result = subprocess.run(
                 ["wmic", "process", "where", "name='chrome.exe'", "get", "ProcessId,CommandLine"],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=10,
             )
             profile_str = str(profile).replace("/", "\\")
             for line in result.stdout.splitlines():
                 if profile_str.lower() in line.lower():
-                    parts = line.strip().split()
-                    for part in parts:
+                    for part in line.strip().split():
                         if part.isdigit():
                             try:
-                                subprocess.run(
-                                    ["taskkill", "/F", "/PID", part],
-                                    capture_output=True, timeout=5, check=True
-                                )
-                                logger.info("Killed stale Chrome PID %s", part)
-                            except (subprocess.SubprocessError, ValueError):
+                                subprocess.run(["taskkill", "/F", "/PID", part], capture_output=True, timeout=5)
+                                logger.info("Killed stale Chrome PID %s (Windows)", part)
+                            except Exception:
                                 pass
+        except FileNotFoundError:
+            # wmic not available — likely Linux, try pkill
+            try:
+                profile_str = str(profile)
+                subprocess.run(
+                    ["pkill", "-f", f"user-data-dir={profile_str}"],
+                    capture_output=True, timeout=5,
+                )
+                logger.debug("pkill ran for profile %s", profile_str)
+            except Exception as exc:
+                logger.debug("Stale chrome kill skipped: %s", exc)
         except Exception as exc:
             logger.debug("Stale chrome check skipped: %s", exc)
 
     def _build_options(self, profile: Path) -> Options:
-        """Build Chrome options with all stability flags."""
         options = Options()
         options.add_argument(f"--user-data-dir={profile}")
 
-        # ── Core stability flags ──────────────────────────────────────────
+        # Core stability
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--disable-extensions")
 
-        # ── Prevent DevToolsActivePort crash ──────────────────────────────
+        # Prevent DevToolsActivePort crash
         options.add_argument("--remote-debugging-port=0")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-backgrounding-occluded-windows")
@@ -134,8 +161,9 @@ class _UserSession:
         options.add_argument("--password-store=basic")
         options.add_argument("--no-service-autorun")
         options.add_argument("--force-color-profile=srgb")
+        options.add_argument("--single-process")
 
-        # ── Anti-detection ────────────────────────────────────────────────
+        # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -144,10 +172,15 @@ class _UserSession:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
-        # ── Headless mode ─────────────────────────────────────────────────
-        if getattr(settings, 'WA_HEADLESS', False):
+        # Always headless on server — set WA_HEADLESS=False only for local debugging
+        if getattr(settings, "WA_HEADLESS", True):
             options.add_argument("--headless=new")
             options.add_argument("--window-size=1280,900")
+
+        # Point Selenium to the correct Chrome binary
+        chrome_binary = _find_chrome_binary()
+        if chrome_binary:
+            options.binary_location = chrome_binary
 
         return options
 
@@ -155,7 +188,6 @@ class _UserSession:
         profile = self._profile_path
         profile.mkdir(parents=True, exist_ok=True)
 
-        # Kill stale Chrome processes that may hold locks on this profile
         self._kill_stale_chrome(profile)
         time.sleep(1)
         self._clear_locks(profile)
@@ -169,26 +201,19 @@ class _UserSession:
                 service = Service(ChromeDriverManager().install())
                 self._driver = webdriver.Chrome(service=service, options=options)
 
-                # Switch to main window if multiple handles exist
                 handles = self._driver.window_handles
                 if len(handles) > 1:
                     self._driver.switch_to.window(handles[-1])
 
                 self._driver.get("https://web.whatsapp.com")
-                logger.info(
-                    "Chrome started for user %s (attempt %d) — waiting 30s.",
-                    self.user_id, attempt,
-                )
+                logger.info("Chrome started for user %s (attempt %d) — waiting 30s.", self.user_id, attempt)
                 time.sleep(30)
                 self._detect()
-                return  # success
+                return
+
             except Exception as exc:
                 last_exc = exc
-                logger.warning(
-                    "Chrome start attempt %d/%d failed for user %s: %s",
-                    attempt, max_attempts, self.user_id, exc,
-                )
-                # Clean up the failed driver
+                logger.warning("Chrome start attempt %d/%d failed for user %s: %s", attempt, max_attempts, self.user_id, exc)
                 if self._driver:
                     try:
                         self._driver.quit()
@@ -197,17 +222,12 @@ class _UserSession:
                     self._driver = None
 
                 if attempt < max_attempts:
-                    # Re-clean locks and wait before retrying
                     self._kill_stale_chrome(profile)
                     time.sleep(2)
                     self._clear_locks(profile)
                     time.sleep(1)
 
-        # All attempts exhausted
-        logger.error(
-            "Chrome start failed for user %s after %d attempts: %s",
-            self.user_id, max_attempts, last_exc, exc_info=True,
-        )
+        logger.error("Chrome start failed for user %s after %d attempts: %s", self.user_id, max_attempts, last_exc, exc_info=True)
         self._driver = None
         self.is_logged_in = False
 
@@ -265,24 +285,20 @@ class _UserSession:
             return None
         try:
             def _cap():
-                # ── 1. Check for 'Click to reload QR code' button ────────────────
                 for reload_sel in [
                     'button span[data-testid="refresh-l"]',
                     'div[data-testid="qrcode-reload-button"]',
-                    '#app .landing-wrapper button',
                     'button[aria-label="Reload"]',
                 ]:
                     btns = self._driver.find_elements(By.CSS_SELECTOR, reload_sel)
                     if btns:
                         try:
                             btns[0].click()
-                            logger.info("Clicked QR reload button for user %s.", self.user_id)
                             time.sleep(2)
                             break
                         except Exception:
                             continue
 
-                # ── 2. Capture QR Canvas ──────────────────────────────────────────
                 for sel in [
                     'canvas[aria-label="Scan me!"]',
                     'canvas[aria-label="Scan this QR code to link a device"]',
@@ -294,17 +310,15 @@ class _UserSession:
                         if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
                             return el.screenshot_as_png
 
-                # Fallback: debug screenshot
-                dbg_path = Path(f"debug_screenshot_{self.user_id}.png").resolve()
-                self._driver.save_screenshot(str(dbg_path))
-                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg_path)
+                dbg = Path(f"debug_screenshot_{self.user_id}.png").resolve()
+                self._driver.save_screenshot(str(dbg))
+                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg)
                 return None
 
             png = await asyncio.to_thread(_cap)
             if png is None:
                 await asyncio.to_thread(self._detect)
                 return None
-            
             img = Image.open(BytesIO(png))
             buf = BytesIO()
             img.save(buf, format="PNG")
@@ -344,12 +358,10 @@ class _UserSession:
     def _sync_send(self, group_name: str, message: str) -> bool:
         with self._send_lock:
             try:
-                # Switch to main window if multiple handles exist
                 handles = self._driver.window_handles
                 if len(handles) > 1:
                     self._driver.switch_to.window(handles[-1])
 
-                # Clear any popup notifications
                 try:
                     self._driver.execute_script(
                         "document.querySelectorAll('span[data-testid=\"x-alt\"]')"
@@ -360,7 +372,6 @@ class _UserSession:
                     pass
                 time.sleep(1)
 
-                # Find search box
                 search = None
                 for sel in [
                     'input[data-tab="3"]',
@@ -382,7 +393,6 @@ class _UserSession:
                 search.send_keys(group_name)
                 time.sleep(4)
 
-                # Find and click matching chat
                 matched = False
                 for item in self._driver.find_elements(By.CSS_SELECTOR, 'span[title]'):
                     try:
@@ -408,7 +418,6 @@ class _UserSession:
 
                 time.sleep(3)
 
-                # Find message box
                 msg_box = None
                 for sel in [
                     'div[contenteditable="true"][data-tab="10"]',
@@ -421,15 +430,12 @@ class _UserSession:
                         break
 
                 if not msg_box:
-                    all_editables = self._driver.find_elements(
-                        By.CSS_SELECTOR, 'div[contenteditable="true"]'
-                    )
+                    all_editables = self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"]')
                     msg_box = all_editables[-1] if all_editables else None
 
                 if not msg_box:
                     raise Exception("Message box not found.")
 
-                # Type message
                 msg_box.click()
                 time.sleep(0.5)
                 for line in message.split("\n"):
@@ -443,16 +449,11 @@ class _UserSession:
                 return True
 
             except Exception as exc:
-                # Save debug screenshot
                 try:
-                    screenshot_path = Path(f"send_fail_{self.user_id}_{int(time.time())}.png").resolve()
-                    self._driver.save_screenshot(str(screenshot_path))
-                    logger.debug("Screenshot saved: %s", screenshot_path)
+                    self._driver.save_screenshot(str(Path(f"send_fail_{self.user_id}_{int(time.time())}.png").resolve()))
                 except Exception:
                     pass
-                
-                logger.error("send_message error for user %s / group '%s': %s", 
-                           self.user_id, group_name, exc, exc_info=True)
+                logger.error("send_message error for user %s / group '%s': %s", self.user_id, group_name, exc, exc_info=True)
                 return False
             finally:
                 try:
@@ -471,10 +472,6 @@ class WhatsAppBot:
     Each user gets their own dedicated Chrome instance that stays alive
     independently — users never share a browser, sessions never clash,
     and the scheduler can send for multiple users concurrently.
-
-    Usage:
-        session = await WhatsAppBot.get_instance().session_for(user_id)
-        await session.send_message(group, text)
     """
 
     _instance: Optional["WhatsAppBot"] = None
@@ -493,7 +490,6 @@ class WhatsAppBot:
         return cls._instance
 
     async def session_for(self, user_id: uuid.UUID) -> _UserSession:
-        """Return the live session for this user, creating and starting it if needed."""
         async with self._registry_lock:
             if user_id not in self._sessions:
                 self._sessions[user_id] = _UserSession(user_id)
@@ -502,7 +498,6 @@ class WhatsAppBot:
         return session
 
     async def remove_session(self, user_id: uuid.UUID) -> None:
-        """Stop and remove the session for this user (called on unlink)."""
         async with self._registry_lock:
             session = self._sessions.pop(user_id, None)
         if session:
@@ -510,10 +505,7 @@ class WhatsAppBot:
             logger.info("Session removed for user %s.", user_id)
 
     def get_existing_session(self, user_id: uuid.UUID) -> Optional[_UserSession]:
-        """Return an existing session without creating one (non-blocking)."""
         return self._sessions.get(user_id)
-
-    # ── Convenience passthrough (keeps old call-sites working) ────────────────
 
     def is_linked_for_user(self, user_id: uuid.UUID) -> bool:
         s = self._sessions.get(user_id)
@@ -542,7 +534,6 @@ class WhatsAppBot:
         return await s.send_message(group_name, message)
 
     def close_all(self) -> None:
-        """Close all sessions (for shutdown)."""
         for session in list(self._sessions.values()):
             session._quit()
         self._sessions.clear()
