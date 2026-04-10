@@ -223,8 +223,6 @@ class _UserSession:
         options.add_argument("--disable-extensions")
         options.add_argument("--no-zygote")
 
-        # Prevent DevToolsActivePort crash without pipe issues
-        options.add_argument("--remote-debugging-port=0")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
