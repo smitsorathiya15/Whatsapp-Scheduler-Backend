@@ -187,6 +187,7 @@ class _UserSession:
 
         # Core stability
         options.add_argument("--no-sandbox")
+        options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-software-rasterizer")
@@ -199,6 +200,7 @@ class _UserSession:
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
         options.add_argument("--disable-features=VizDisplayCompositor,TranslateUI")
+        options.add_argument("--disable-features=site-per-process,IsolateOrigins")
         options.add_argument("--disable-ipc-flooding-protection")
         options.add_argument("--disable-hang-monitor")
         options.add_argument("--disable-prompt-on-repost")
@@ -224,8 +226,10 @@ class _UserSession:
 
         # Always headless on server — set WA_HEADLESS=False only for local debugging
         if getattr(settings, "WA_HEADLESS", True):
-            options.add_argument("--headless=new")
+            options.add_argument("--headless")
             options.add_argument("--window-size=1280,900")
+
+        options.page_load_strategy = "eager"
 
         # Point Selenium to the correct Chrome binary
         chrome_binary = _find_chrome_binary()
