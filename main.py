@@ -102,6 +102,14 @@ async def health():
     )
 
 
+@app.get("/", tags=["Health"])
+async def root():
+    return ResponseHelper.success(
+        {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV},
+        key="health_check_success",
+    )
+
+
 @app.get("/keepalive", tags=["Health"])
 async def keepalive():
     return ResponseHelper.success({"status": "alive"}, key="keepalive_success")

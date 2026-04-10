@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: whatsapp-scheduler-backend
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    numInstances: 1
+    disk:
+      name: whatsapp-data
+      mountPath: /app/data
+      sizeGB: 5
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "False"
+      - key: CHROME_BIN
+        value: /usr/bin/chromium
+      - key: WA_HEADLESS
+        value: "True"
+      - key: WA_PROFILE_DIR
+        value: /app/data/wa_profile
+      - key: SCHEDULER_INTERVAL_SECONDS
+        value: "60"
+      - key: SCHEDULER_TIMEZONE
+        value: Asia/Kolkata
+      - key: APP_NAME
+        value: Whatsapp Scheduler Backend
+      - key: DB_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRES_MINUTES
+        value: "60"
