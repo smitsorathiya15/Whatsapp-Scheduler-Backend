@@ -81,6 +81,48 @@ class _UserSession:
     def _profile_path(self) -> Path:
         return Path(settings.WA_PROFILE_DIR).resolve() / str(self.user_id)
 
+    @staticmethod
+    def _logged_in_selectors() -> list[str]:
+        return [
+            'div[data-testid="chat-list"]',
+            'div#pane-side',
+            'div[contenteditable="true"][data-tab="3"]',
+            'input[data-tab="3"]',
+            '[data-testid="intro-text"]',
+        ]
+
+    @staticmethod
+    def _qr_selectors() -> list[str]:
+        return [
+            'canvas[aria-label="Scan me!"]',
+            'canvas[aria-label="Scan this QR code to link a device"]',
+            'div[data-testid="qrcode"] canvas',
+            'div[data-ref] canvas',
+            '.landing-main canvas',
+            'canvas',
+        ]
+
+    def _has_any(self, selectors: list[str], min_size: int = 0) -> bool:
+        if self._driver is None:
+            return False
+        for sel in selectors:
+            for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
+                if min_size <= 0:
+                    return True
+                if el.size.get("width", 0) >= min_size and el.size.get("height", 0) >= min_size:
+                    return True
+        return False
+
+    def _save_debug_screenshot(self, prefix: str) -> None:
+        if self._driver is None:
+            return
+        try:
+            dbg = Path(f"{prefix}_{self.user_id}_{int(time.time())}.png").resolve()
+            self._driver.save_screenshot(str(dbg))
+            logger.info("Saved debug screenshot for user %s: %s", self.user_id, dbg)
+        except Exception as exc:
+            logger.debug("Could not save screenshot for user %s: %s", self.user_id, exc)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def ensure_started(self) -> None:
@@ -221,8 +263,10 @@ class _UserSession:
                     self._driver.switch_to.window(handles[-1])
 
                 self._driver.get("https://web.whatsapp.com")
-                logger.info("Chrome started for user %s (attempt %d) — waiting 30s.", self.user_id, attempt)
-                time.sleep(30)
+                logger.info("Chrome started for user %s (attempt %d) and waiting for WhatsApp Web.", self.user_id, attempt)
+                WebDriverWait(self._driver, 75).until(
+                    lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
+                )
                 self._detect()
                 return
 
@@ -251,29 +295,22 @@ class _UserSession:
         if self._driver is None:
             return
         try:
-            WebDriverWait(self._driver, 20).until(
-                lambda d: (
-                    d.find_elements(By.CSS_SELECTOR, 'div[data-testid="chat-list"]') or
-                    d.find_elements(By.CSS_SELECTOR, 'input[data-tab="3"]') or
-                    d.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="3"]') or
-                    d.find_elements(By.CSS_SELECTOR, 'div#pane-side') or
-                    d.find_elements(By.CSS_SELECTOR, 'canvas')
-                )
+            WebDriverWait(self._driver, 45).until(
+                lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
             )
-            self.is_logged_in = bool(
-                self._driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="chat-list"]') or
-                self._driver.find_elements(By.CSS_SELECTOR, 'input[data-tab="3"]') or
-                self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="3"]') or
-                self._driver.find_elements(By.CSS_SELECTOR, 'div#pane-side')
-            )
+            self.is_logged_in = self._has_any(self._logged_in_selectors())
             if self.is_logged_in:
                 logger.info("Session restored for user %s.", self.user_id)
                 time.sleep(5)
+                self.last_error = None
             else:
                 logger.info("QR visible for user %s.", self.user_id)
+                self.last_error = None
         except Exception as exc:
             logger.warning("Detect login failed for user %s: %s", self.user_id, exc)
+            self.last_error = "WhatsApp Web loaded slowly or QR was not visible yet."
             self.is_logged_in = False
+            self._save_debug_screenshot("detect_fail")
         finally:
             try:
                 self._driver.switch_to.default_content()
@@ -302,6 +339,13 @@ class _UserSession:
             return None
         try:
             def _cap():
+                try:
+                    WebDriverWait(self._driver, 30).until(
+                        lambda d: self._has_any(self._qr_selectors(), min_size=100) or self._has_any(self._logged_in_selectors())
+                    )
+                except Exception:
+                    logger.debug("QR wait timed out for user %s before capture.", self.user_id)
+
                 for reload_sel in [
                     'button span[data-testid="refresh-l"]',
                     'div[data-testid="qrcode-reload-button"]',
@@ -316,20 +360,12 @@ class _UserSession:
                         except Exception:
                             continue
 
-                for sel in [
-                    'canvas[aria-label="Scan me!"]',
-                    'canvas[aria-label="Scan this QR code to link a device"]',
-                    '.landing-main canvas',
-                    'div[data-testid="qrcode"] canvas',
-                    'canvas',
-                ]:
+                for sel in self._qr_selectors():
                     for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
                         if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
                             return el.screenshot_as_png
 
-                dbg = Path(f"debug_screenshot_{self.user_id}.png").resolve()
-                self._driver.save_screenshot(str(dbg))
-                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg)
+                self._save_debug_screenshot("qr_missing")
                 return None
 
             png = await asyncio.to_thread(_cap)
@@ -351,14 +387,10 @@ class _UserSession:
         deadline = time.time() + timeout
         while time.time() < deadline:
             def _check():
-                return bool(
-                    self._driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="chat-list"]') or
-                    self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"][data-tab="3"]') or
-                    self._driver.find_elements(By.CSS_SELECTOR, 'div#pane-side') or
-                    self._driver.find_elements(By.CSS_SELECTOR, '[data-testid="intro-text"]')
-                )
+                return self._has_any(self._logged_in_selectors())
             if await asyncio.to_thread(_check):
                 self.is_logged_in = True
+                self.last_error = None
                 logger.info("QR scanned — user %s linked.", self.user_id)
                 return True
             await asyncio.sleep(1)
