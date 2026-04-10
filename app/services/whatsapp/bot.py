@@ -58,6 +58,26 @@ def _find_chrome_binary() -> Optional[str]:
     return None
 
 
+def _read_command_version(command: list[str]) -> Optional[str]:
+    """Return the first line of `<cmd> --version` output when available."""
+    try:
+        result = subprocess.run(
+            command + ["--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("Version check failed for %s: %s", command, exc)
+        return None
+
+    for stream in (result.stdout, result.stderr):
+        text = (stream or "").strip()
+        if text:
+            return text.splitlines()[0].strip()
+    return None
+
+
 # ── Per-user driver wrapper ────────────────────────────────────────────────────
 
 
@@ -81,6 +101,10 @@ class _UserSession:
     @property
     def _profile_path(self) -> Path:
         return Path(settings.WA_PROFILE_DIR).resolve() / str(self.user_id)
+
+    @property
+    def _runtime_base_path(self) -> Path:
+        return Path("/tmp/wa_runtime").resolve() / str(self.user_id)
 
     @staticmethod
     def _logged_in_selectors() -> list[str]:
@@ -184,6 +208,11 @@ class _UserSession:
     def _build_options(self, profile: Path) -> Options:
         options = Options()
         options.add_argument(f"--user-data-dir={profile}")
+        runtime_base = self._runtime_base_path
+        runtime_base.mkdir(parents=True, exist_ok=True)
+        options.add_argument(f"--data-path={runtime_base / 'data-path'}")
+        options.add_argument(f"--disk-cache-dir={runtime_base / 'disk-cache'}")
+        options.add_argument(f"--homedir={runtime_base / 'home'}")
 
         # Core stability
         options.add_argument("--no-sandbox")
@@ -194,8 +223,8 @@ class _UserSession:
         options.add_argument("--disable-extensions")
         options.add_argument("--no-zygote")
 
-        # Prevent DevToolsActivePort crash
-        options.add_argument("--remote-debugging-pipe")
+        # Prevent DevToolsActivePort crash without pipe issues
+        options.add_argument("--remote-debugging-port=0")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
@@ -226,7 +255,7 @@ class _UserSession:
 
         # Always headless on server — set WA_HEADLESS=False only for local debugging
         if getattr(settings, "WA_HEADLESS", True):
-            options.add_argument("--headless")
+            options.add_argument("--headless=new")
             options.add_argument("--window-size=1280,900")
 
         options.page_load_strategy = "eager"
@@ -256,17 +285,28 @@ class _UserSession:
 
         max_attempts = 3
         last_exc = None
+        chromedriver_path = shutil.which("chromedriver")
+        chrome_version = _read_command_version([chrome_binary]) if chrome_binary else None
+        driver_version = _read_command_version([chromedriver_path]) if chromedriver_path else None
+
+        if chrome_version or driver_version:
+            logger.info(
+                "WhatsApp browser versions for user %s: chrome=%s driver=%s",
+                self.user_id,
+                chrome_version or "unknown",
+                driver_version or "unknown",
+            )
 
         for attempt in range(1, max_attempts + 1):
             try:
                 options = self._build_options(profile)
-                chromedriver_path = shutil.which("chromedriver")
                 logger.info(
-                    "Starting Chromium for user %s with binary=%s driver=%s profile=%s headless=%s",
+                    "Starting Chromium for user %s with binary=%s driver=%s profile=%s runtime=%s headless=%s",
                     self.user_id,
                     chrome_binary,
                     chromedriver_path or "webdriver-manager",
                     profile,
+                    self._runtime_base_path,
                     getattr(settings, "WA_HEADLESS", True),
                 )
                 service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
