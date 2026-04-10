@@ -1,10 +1,13 @@
-"""WhatsApp Web automation — one Chrome instance per user, managed by a registry."""
+"""
+WhatsApp Web automation — one Chrome instance per user, managed by a registry.
+"""
 
 import asyncio
 import base64
 import logging
 import os
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -28,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ── Per-user driver wrapper ────────────────────────────────────────────────────
 
+
 class _UserSession:
     """
     One Chrome instance dedicated to a single user.
@@ -35,11 +39,11 @@ class _UserSession:
     """
 
     def __init__(self, user_id: uuid.UUID) -> None:
-        self.user_id      = user_id
+        self.user_id = user_id
         self.is_logged_in = False
         self._driver: Optional[webdriver.Chrome] = None
-        self._send_lock   = threading.Lock()
-        self._init_lock   = asyncio.Lock()
+        self._send_lock = threading.Lock()
+        self._init_lock = asyncio.Lock()
 
     # ── Profile ───────────────────────────────────────────────────────────────
 
@@ -77,26 +81,24 @@ class _UserSession:
 
     def _kill_stale_chrome(self, profile: Path) -> None:
         """Kill any leftover Chrome processes using the same user-data-dir."""
-        import subprocess
         try:
             result = subprocess.run(
-                ["wmic", "process", "where",
-                 "name='chrome.exe'", "get", "ProcessId,CommandLine"],
+                ["wmic", "process", "where", "name='chrome.exe'", "get", "ProcessId,CommandLine"],
                 capture_output=True, text=True, timeout=10
             )
             profile_str = str(profile).replace("/", "\\")
             for line in result.stdout.splitlines():
-                if profile_str in line or str(profile) in line:
+                if profile_str.lower() in line.lower():
                     parts = line.strip().split()
                     for part in parts:
                         if part.isdigit():
                             try:
                                 subprocess.run(
                                     ["taskkill", "/F", "/PID", part],
-                                    capture_output=True, timeout=5
+                                    capture_output=True, timeout=5, check=True
                                 )
                                 logger.info("Killed stale Chrome PID %s", part)
-                            except Exception:
+                            except (subprocess.SubprocessError, ValueError):
                                 pass
         except Exception as exc:
             logger.debug("Stale chrome check skipped: %s", exc)
@@ -143,7 +145,7 @@ class _UserSession:
         options.add_experimental_option("useAutomationExtension", False)
 
         # ── Headless mode ─────────────────────────────────────────────────
-        if settings.WA_HEADLESS:
+        if getattr(settings, 'WA_HEADLESS', False):
             options.add_argument("--headless=new")
             options.add_argument("--window-size=1280,900")
 
@@ -167,6 +169,7 @@ class _UserSession:
                 service = Service(ChromeDriverManager().install())
                 self._driver = webdriver.Chrome(service=service, options=options)
 
+                # Switch to main window if multiple handles exist
                 handles = self._driver.window_handles
                 if len(handles) > 1:
                     self._driver.switch_to.window(handles[-1])
@@ -281,6 +284,7 @@ class _UserSession:
 
                 # ── 2. Capture QR Canvas ──────────────────────────────────────────
                 for sel in [
+                    'canvas[aria-label="Scan me!"]',
                     'canvas[aria-label="Scan this QR code to link a device"]',
                     '.landing-main canvas',
                     'div[data-testid="qrcode"] canvas',
@@ -291,15 +295,16 @@ class _UserSession:
                             return el.screenshot_as_png
 
                 # Fallback: debug screenshot
-                dbg = Path("debug_screenshot.png").resolve()
-                self._driver.save_screenshot(str(dbg))
-                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg)
+                dbg_path = Path(f"debug_screenshot_{self.user_id}.png").resolve()
+                self._driver.save_screenshot(str(dbg_path))
+                logger.debug("QR not found for user %s. Screenshot: %s", self.user_id, dbg_path)
                 return None
 
             png = await asyncio.to_thread(_cap)
             if png is None:
                 await asyncio.to_thread(self._detect)
                 return None
+            
             img = Image.open(BytesIO(png))
             buf = BytesIO()
             img.save(buf, format="PNG")
@@ -339,24 +344,27 @@ class _UserSession:
     def _sync_send(self, group_name: str, message: str) -> bool:
         with self._send_lock:
             try:
+                # Switch to main window if multiple handles exist
                 handles = self._driver.window_handles
                 if len(handles) > 1:
                     self._driver.switch_to.window(handles[-1])
 
+                # Clear any popup notifications
                 try:
                     self._driver.execute_script(
-                        "document.querySelectorAll('span[data-testid=\"x-alt\"]').forEach("
-                        "b => { const c = b.closest('[role=\"alert\"]') || b.parentElement.parentElement;"
-                        " if (c) c.remove(); });"
+                        "document.querySelectorAll('span[data-testid=\"x-alt\"]')"
+                        ".forEach(b => { const c = b.closest('[role=\"alert\"]') || "
+                        "b.parentElement.parentElement; if (c) c.remove(); });"
                     )
                 except Exception:
                     pass
                 time.sleep(1)
 
+                # Find search box
                 search = None
                 for sel in [
                     'input[data-tab="3"]',
-                    'input[role="textbox"][type="text"]',
+                    'input[title="Search or start new chat"]',
                     'div[contenteditable="true"][data-tab="3"]',
                     'div[data-testid="search-input"]',
                 ]:
@@ -374,6 +382,7 @@ class _UserSession:
                 search.send_keys(group_name)
                 time.sleep(4)
 
+                # Find and click matching chat
                 matched = False
                 for item in self._driver.find_elements(By.CSS_SELECTOR, 'span[title]'):
                     try:
@@ -397,13 +406,14 @@ class _UserSession:
                 if not matched:
                     raise Exception(f"Group '{group_name}' not found.")
 
-                time.sleep(2)
+                time.sleep(3)
 
+                # Find message box
                 msg_box = None
                 for sel in [
                     'div[contenteditable="true"][data-tab="10"]',
                     'div[data-testid="conversation-compose-box-input"]',
-                    'footer div[contenteditable="true"]',
+                    'div[contenteditable="true"][data-id="message-container"]',
                 ]:
                     els = self._driver.find_elements(By.CSS_SELECTOR, sel)
                     if els:
@@ -411,31 +421,38 @@ class _UserSession:
                         break
 
                 if not msg_box:
-                    all_edit = self._driver.find_elements(
+                    all_editables = self._driver.find_elements(
                         By.CSS_SELECTOR, 'div[contenteditable="true"]'
                     )
-                    msg_box = all_edit[-1] if all_edit else None
+                    msg_box = all_editables[-1] if all_editables else None
 
                 if not msg_box:
                     raise Exception("Message box not found.")
 
+                # Type message
                 msg_box.click()
+                time.sleep(0.5)
                 for line in message.split("\n"):
                     msg_box.send_keys(line)
                     msg_box.send_keys(Keys.SHIFT + Keys.ENTER)
                 time.sleep(0.5)
                 msg_box.send_keys(Keys.ENTER)
-                time.sleep(1)
+                time.sleep(2)
+
                 logger.info("Message sent to '%s' for user %s.", group_name, self.user_id)
                 return True
+
             except Exception as exc:
+                # Save debug screenshot
                 try:
-                    self._driver.save_screenshot(
-                        str(Path(f"send_fail_{self.user_id}.png").resolve())
-                    )
+                    screenshot_path = Path(f"send_fail_{self.user_id}_{int(time.time())}.png").resolve()
+                    self._driver.save_screenshot(str(screenshot_path))
+                    logger.debug("Screenshot saved: %s", screenshot_path)
                 except Exception:
                     pass
-                logger.error("send_message error for user %s / group '%s': %s", self.user_id, group_name, exc)
+                
+                logger.error("send_message error for user %s / group '%s': %s", 
+                           self.user_id, group_name, exc, exc_info=True)
                 return False
             finally:
                 try:
@@ -445,6 +462,7 @@ class _UserSession:
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
+
 
 class WhatsAppBot:
     """
@@ -524,6 +542,8 @@ class WhatsAppBot:
         return await s.send_message(group_name, message)
 
     def close_all(self) -> None:
-        for s in list(self._sessions.values()):
-            s._quit()
+        """Close all sessions (for shutdown)."""
+        for session in list(self._sessions.values()):
+            session._quit()
         self._sessions.clear()
+        logger.info("All WhatsApp sessions closed.")
