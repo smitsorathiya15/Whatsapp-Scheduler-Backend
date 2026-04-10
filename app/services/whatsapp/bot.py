@@ -208,39 +208,17 @@ class _UserSession:
     def _build_options(self, profile: Path) -> Options:
         options = Options()
         options.add_argument(f"--user-data-dir={profile}")
-        runtime_base = self._runtime_base_path
-        runtime_base.mkdir(parents=True, exist_ok=True)
-        options.add_argument(f"--data-path={runtime_base / 'data-path'}")
-        options.add_argument(f"--disk-cache-dir={runtime_base / 'disk-cache'}")
-        options.add_argument(f"--homedir={runtime_base / 'home'}")
 
         # Core stability
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--disable-software-rasterizer")
+
         options.add_argument("--disable-extensions")
         options.add_argument("--no-zygote")
 
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-renderer-backgrounding")
-        options.add_argument("--disable-features=VizDisplayCompositor,TranslateUI")
-        options.add_argument("--disable-features=site-per-process,IsolateOrigins")
-        options.add_argument("--disable-ipc-flooding-protection")
-        options.add_argument("--disable-hang-monitor")
-        options.add_argument("--disable-prompt-on-repost")
-        options.add_argument("--disable-client-side-phishing-detection")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-default-browser-check")
-        options.add_argument("--password-store=basic")
-        options.add_argument("--no-service-autorun")
-        options.add_argument("--force-color-profile=srgb")
+
 
         # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -307,7 +285,9 @@ class _UserSession:
                     self._runtime_base_path,
                     getattr(settings, "WA_HEADLESS", True),
                 )
-                service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
+                log_file = f"/tmp/chromedriver_{self.user_id}.log"
+                service_args = ["--verbose"]
+                service = Service(chromedriver_path, service_args=service_args, log_path=log_file) if chromedriver_path else Service(ChromeDriverManager().install(), service_args=service_args, log_path=log_file)
                 with self._driver_lock:
                     self._driver = webdriver.Chrome(service=service, options=options)
                     self.last_error = None
