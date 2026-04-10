@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+waenv
+wa_profile
+.env.dev
+debug_screenshot_*.png
+send_fail_*.png

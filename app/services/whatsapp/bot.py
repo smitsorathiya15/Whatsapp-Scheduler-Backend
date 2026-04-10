@@ -29,6 +29,10 @@ from app.config.setting import settings
 logger = logging.getLogger(__name__)
 
 
+class BrowserUnavailableError(RuntimeError):
+    """Raised when no Chrome/Chromium binary is available on the host."""
+
+
 def _find_chrome_binary() -> Optional[str]:
     """
     Locate the Chrome binary.
@@ -66,6 +70,7 @@ class _UserSession:
     def __init__(self, user_id: uuid.UUID) -> None:
         self.user_id = user_id
         self.is_logged_in = False
+        self.last_error: Optional[str] = None
         self._driver: Optional[webdriver.Chrome] = None
         self._send_lock = threading.Lock()
         self._init_lock = asyncio.Lock()
@@ -188,6 +193,14 @@ class _UserSession:
         profile = self._profile_path
         profile.mkdir(parents=True, exist_ok=True)
 
+        chrome_binary = _find_chrome_binary()
+        if not chrome_binary:
+            self.last_error = "Chrome/Chromium browser is not installed on the server."
+            logger.error("Cannot start WhatsApp session for user %s: %s", self.user_id, self.last_error)
+            self._driver = None
+            self.is_logged_in = False
+            return
+
         self._kill_stale_chrome(profile)
         time.sleep(1)
         self._clear_locks(profile)
@@ -198,8 +211,10 @@ class _UserSession:
         for attempt in range(1, max_attempts + 1):
             try:
                 options = self._build_options(profile)
-                service = Service(ChromeDriverManager().install())
+                chromedriver_path = shutil.which("chromedriver")
+                service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
                 self._driver = webdriver.Chrome(service=service, options=options)
+                self.last_error = None
 
                 handles = self._driver.window_handles
                 if len(handles) > 1:
@@ -213,6 +228,7 @@ class _UserSession:
 
             except Exception as exc:
                 last_exc = exc
+                self.last_error = str(exc)
                 logger.warning("Chrome start attempt %d/%d failed for user %s: %s", attempt, max_attempts, self.user_id, exc)
                 if self._driver:
                     try:
@@ -268,6 +284,7 @@ class _UserSession:
         async with self._init_lock:
             await asyncio.to_thread(self._quit)
             self.is_logged_in = False
+            self.last_error = None
 
     def _quit(self) -> None:
         if self._driver:
