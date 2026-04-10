@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # ── WhatsApp ──────────────────────────────────────────────
     WA_PROFILE_DIR: str
     WA_HEADLESS: bool = True
+    WA_CHROME_BINARY: str | None = None
 
     # ── Scheduler ─────────────────────────────────────────────
     SCHEDULER_INTERVAL_SECONDS: int

@@ -41,7 +41,7 @@ def _find_chrome_binary() -> Optional[str]:
         "/usr/bin/chromium",
         "/snap/bin/chromium",
     ]
-    override = getattr(settings, "WA_CHROME_BINARY", None)
+    override = getattr(settings, "WA_CHROME_BINARY", None) or os.getenv("CHROME_BIN")
     if override:
         candidates.insert(0, override)
 
