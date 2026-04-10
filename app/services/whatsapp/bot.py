@@ -191,9 +191,10 @@ class _UserSession:
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--disable-extensions")
+        options.add_argument("--no-zygote")
 
         # Prevent DevToolsActivePort crash
-        options.add_argument("--remote-debugging-port=0")
+        options.add_argument("--remote-debugging-pipe")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-backgrounding-occluded-windows")
         options.add_argument("--disable-renderer-backgrounding")
@@ -211,7 +212,6 @@ class _UserSession:
         options.add_argument("--password-store=basic")
         options.add_argument("--no-service-autorun")
         options.add_argument("--force-color-profile=srgb")
-        options.add_argument("--single-process")
 
         # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -257,6 +257,14 @@ class _UserSession:
             try:
                 options = self._build_options(profile)
                 chromedriver_path = shutil.which("chromedriver")
+                logger.info(
+                    "Starting Chromium for user %s with binary=%s driver=%s profile=%s headless=%s",
+                    self.user_id,
+                    chrome_binary,
+                    chromedriver_path or "webdriver-manager",
+                    profile,
+                    getattr(settings, "WA_HEADLESS", True),
+                )
                 service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
                 with self._driver_lock:
                     self._driver = webdriver.Chrome(service=service, options=options)
