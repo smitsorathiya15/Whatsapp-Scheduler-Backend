@@ -19,6 +19,11 @@
         "msg": "Login successful.",
         "reason": "Credentials validated and access token generated."
     },
+    "user_logout_success": {
+        "detail_type": "Success",
+        "msg": "Logout successful.",
+        "reason": "The current user session was cleared on the client side."
+    },
     "user_profile_success": {
         "detail_type": "Success",
         "msg": "User profile retrieved successfully.",

@@ -26,6 +26,7 @@ class UserAuthRouter:
     def _register(self) -> None:
         self.router.add_api_route("/register", self.register, methods=["POST"], response_model=ApiResponse, status_code=status.HTTP_201_CREATED)
         self.router.add_api_route("/login", self.login, methods=["POST"], response_model=ApiResponse)
+        self.router.add_api_route("/logout", self.logout, methods=["POST"], response_model=ApiResponse, dependencies=[Depends(AuthService.get_current_user)])
         self.router.add_api_route("/me", self.me, methods=["GET"], response_model=ApiResponse, dependencies=[Depends(AuthService.get_current_user)])
 
     async def register(self, payload: UserCreate, db: AsyncSession = Depends(DatabaseDependency.get_db)) -> ApiResponse:
@@ -66,6 +67,13 @@ class UserAuthRouter:
             raise
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    async def logout(self, current_user: User = Depends(AuthService.get_current_user)) -> ApiResponse:
+        logger.info("User logged out: %s", current_user.username)
+        return ResponseHelper.success(
+            {"logged_out": True, "username": current_user.username},
+            key="user_logout_success",
+        )
 
     async def me(self, current_user: User = Depends(AuthService.get_current_user)) -> ApiResponse:
         return ResponseHelper.success(UserRead.model_validate(current_user).model_dump(), key="user_profile_success")
