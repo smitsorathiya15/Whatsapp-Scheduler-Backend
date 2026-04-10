@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -57,9 +58,15 @@ class WAScheduler:
         from app.services.whatsapp.bot import WhatsAppBot
         from sqlalchemy import select
 
-        now          = datetime.now()
-        current_day  = now.strftime("%A").lower()
+        now = datetime.now(ZoneInfo(settings.SCHEDULER_TIMEZONE))
+        current_day = now.strftime("%A").lower()
         current_time = now.strftime("%H:%M:00")
+        logger.debug(
+            "Scheduler tick evaluating schedules at %s (%s / %s).",
+            now.isoformat(),
+            current_day,
+            current_time,
+        )
 
         db_manager = DatabaseManager.get_instance()
         async with db_manager.async_session_local() as db:
@@ -77,7 +84,10 @@ class WAScheduler:
             ]
 
             if not due:
+                logger.debug("No due schedules found for %s at %s.", current_day, current_time)
                 return
+
+            logger.info("Found %d due schedule(s) for %s at %s.", len(due), current_day, current_time)
 
             # Group due schedules by user_id
             by_user: dict = {}
