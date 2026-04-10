@@ -4,7 +4,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     CHROME_BIN=/usr/bin/chromium \
-    WA_PROFILE_DIR=/app/data/wa_profile
+    CHROMEDRIVER_PATH=/usr/bin/chromedriver \
+    WA_PROFILE_DIR=/tmp/wa_profile \
+    WA_HEADLESS=True \
+    WA_CHROME_BINARY=/usr/bin/chromium
 
 WORKDIR /app
 
@@ -44,8 +47,6 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data/wa_profile
+EXPOSE 8080
 
-EXPOSE 10000
-
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

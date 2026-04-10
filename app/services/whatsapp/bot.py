@@ -30,25 +30,32 @@ logger = logging.getLogger(__name__)
 
 
 def _find_chrome_binary() -> Optional[str]:
-    """Locate the Chrome/Chromium binary, checking settings override first."""
+    """Locate the Chrome/Chromium binary."""
     candidates = [
-        getattr(settings, "WA_CHROME_BINARY", None) or os.getenv("CHROME_BIN", ""),
+        os.getenv("WA_CHROME_BINARY", ""),
+        os.getenv("CHROME_BIN", ""),
+        getattr(settings, "WA_CHROME_BINARY", None) or "",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
         "/snap/bin/chromium",
     ]
     for path in candidates:
         if path and Path(path).exists():
             logger.info("Found Chrome binary at: %s", path)
             return path
-    logger.warning("Could not find Chrome binary in any standard location.")
+    logger.warning("No Chrome binary found.")
     return None
 
 
 def _find_chromedriver() -> Optional[str]:
-    """Find chromedriver on PATH (pre-installed on Railway/Render)."""
+    """Find system chromedriver (pre-installed in Docker image)."""
+    # Check env override first
+    env_path = os.getenv("CHROMEDRIVER_PATH", "")
+    if env_path and Path(env_path).exists():
+        logger.info("Found chromedriver via env at: %s", env_path)
+        return env_path
     path = shutil.which("chromedriver")
     if path:
         logger.info("Found chromedriver at: %s", path)
@@ -68,18 +75,9 @@ class _UserSession:
         self._send_lock = threading.Lock()
         self._init_lock = asyncio.Lock()
 
-    # ── Paths ─────────────────────────────────────────────────────────────────
-
     @property
     def _profile_path(self) -> Path:
-        """
-        Chrome profile stored under WA_PROFILE_DIR.
-        On Railway this must be /tmp/... because /app is read-only at runtime.
-        Default WA_PROFILE_DIR should be /tmp/wa_profile in Railway env vars.
-        """
         return Path(settings.WA_PROFILE_DIR).resolve() / str(self.user_id)
-
-    # ── Selectors ─────────────────────────────────────────────────────────────
 
     _LOGGED_IN = [
         'div[data-testid="chat-list"]',
@@ -112,8 +110,6 @@ class _UserSession:
                 continue
         return False
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-
     async def ensure_started(self) -> None:
         async with self._init_lock:
             if self._driver is not None:
@@ -125,7 +121,7 @@ class _UserSession:
             p = profile / name
             if not p.exists():
                 continue
-            for attempt in range(5):
+            for _ in range(5):
                 try:
                     shutil.rmtree(p) if p.is_dir() else os.remove(p)
                     break
@@ -133,13 +129,17 @@ class _UserSession:
                     time.sleep(0.2)
 
     def _kill_stale_chrome(self, profile: Path) -> None:
+        # Linux
         try:
-            subprocess.run(["pkill", "-f", f"user-data-dir={profile}"], capture_output=True, timeout=5)
+            subprocess.run(["pkill", "-f", f"user-data-dir={profile}"],
+                           capture_output=True, timeout=5)
         except Exception:
             pass
+        # Windows (local dev)
         try:
             result = subprocess.run(
-                ["wmic", "process", "where", "name='chrome.exe'", "get", "ProcessId,CommandLine"],
+                ["wmic", "process", "where", "name='chrome.exe'",
+                 "get", "ProcessId,CommandLine"],
                 capture_output=True, text=True, timeout=10,
             )
             for line in result.stdout.splitlines():
@@ -147,7 +147,8 @@ class _UserSession:
                     for part in line.strip().split():
                         if part.isdigit():
                             try:
-                                subprocess.run(["taskkill", "/F", "/PID", part], capture_output=True, timeout=5)
+                                subprocess.run(["taskkill", "/F", "/PID", part],
+                                               capture_output=True, timeout=5)
                             except Exception:
                                 pass
         except Exception:
@@ -155,55 +156,50 @@ class _UserSession:
 
     def _build_options(self, profile: Path) -> Options:
         """
-        Chrome flags tuned for containerised Linux (Railway / Render).
+        Chrome options for Debian Chromium inside a Docker container.
 
-        Key constraints:
-        - /dev/shm is tiny (64 MB) → --disable-dev-shm-usage redirects to /tmp
-        - No display server → --headless=new  (or legacy --headless for older builds)
-        - No setuid sandbox → --no-sandbox + --disable-setuid-sandbox
-        - Single-process avoids zygote/renderer crashes in constrained containers
-        - Profile must be under /tmp (writable at runtime on Railway)
+        Key decisions:
+        - --headless (legacy flag, NOT --headless=new) — more stable on Debian chromium
+        - --single-process + --no-zygote — avoid renderer/zygote crashes in containers
+        - --disable-dev-shm-usage — /dev/shm is too small in containers (64 MB)
+        - --no-sandbox + --disable-setuid-sandbox — required without root namespace
+        - profile under /tmp — /app is read-only at runtime on Railway
         """
         options = Options()
 
-        # ── Profile (must be writable — /tmp on Railway) ──────────────────────
         options.add_argument(f"--user-data-dir={profile}")
 
-        # ── Sandbox / security (required in containers) ───────────────────────
+        # Required in containers — no user namespace / setuid
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
 
-        # ── Shared memory (containers have tiny /dev/shm) ────────────────────
+        # Shared memory — redirect to /tmp because /dev/shm is tiny
         options.add_argument("--disable-dev-shm-usage")
-        # Redirect Chrome's shared memory to /tmp entirely
-        options.add_argument("--shm-size=256mb")
 
-        # ── Process model — single-process avoids renderer/zygote crashes ─────
+        # Process model — avoids zygote/renderer crash in constrained containers
         options.add_argument("--single-process")
         options.add_argument("--no-zygote")
 
-        # ── GPU / rendering (no GPU in containers) ────────────────────────────
+        # No GPU in containers
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--disable-gpu-sandbox")
 
-        # ── Stability ─────────────────────────────────────────────────────────
+        # General stability
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-default-apps")
         options.add_argument("--disable-sync")
-        options.add_argument("--disable-translate")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--mute-audio")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
+        options.add_argument("--mute-audio")
         options.add_argument("--password-store=basic")
+        options.add_argument("--metrics-recording-only")
         options.add_argument("--safebrowsing-disable-auto-update")
         options.add_argument("--ignore-certificate-errors")
         options.add_argument("--ignore-ssl-errors")
-        options.add_argument("--ignore-certificate-errors-spki-list")
 
-        # ── Anti-detection ────────────────────────────────────────────────────
+        # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument(
             "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
@@ -212,19 +208,19 @@ class _UserSession:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
-        # ── Headless ─────────────────────────────────────────────────────────
+        # Headless — use LEGACY --headless flag, NOT --headless=new
+        # Debian chromium package has stability issues with --headless=new in containers
         if getattr(settings, "WA_HEADLESS", True):
-            options.add_argument("--headless=new")
+            options.add_argument("--headless")          # legacy headless — stable on Debian
             options.add_argument("--window-size=1280,900")
             options.add_argument("--hide-scrollbars")
-            options.add_argument("--virtual-time-budget=0")
 
-        # ── Binary location ───────────────────────────────────────────────────
+        options.page_load_strategy = "eager"
+
         binary = _find_chrome_binary()
         if binary:
             options.binary_location = binary
 
-        options.page_load_strategy = "eager"
         return options
 
     def _start(self) -> None:
@@ -241,31 +237,22 @@ class _UserSession:
         time.sleep(1)
         self._clear_locks(profile)
 
-        # Prefer system chromedriver (matches installed Chromium version exactly)
         chromedriver = _find_chromedriver()
-
         max_attempts = 3
         last_exc: Optional[Exception] = None
 
         for attempt in range(1, max_attempts + 1):
             try:
-                options = self._build_options(profile)
+                options  = self._build_options(profile)
+                log_path = f"/tmp/chromedriver_{self.user_id}.log"
 
                 if chromedriver:
-                    service = Service(
-                        chromedriver,
-                        service_args=["--verbose"],
-                        log_path=f"/tmp/chromedriver_{self.user_id}.log",
-                    )
+                    service = Service(chromedriver, log_path=log_path)
                 else:
-                    service = Service(
-                        ChromeDriverManager().install(),
-                        service_args=["--verbose"],
-                        log_path=f"/tmp/chromedriver_{self.user_id}.log",
-                    )
+                    service = Service(ChromeDriverManager().install(), log_path=log_path)
 
                 logger.info(
-                    "Chrome start attempt %d/%d for user %s | binary=%s | driver=%s | profile=%s",
+                    "Chrome start attempt %d/%d | user=%s | binary=%s | driver=%s | profile=%s",
                     attempt, max_attempts, self.user_id,
                     chrome_binary, chromedriver or "webdriver-manager", profile,
                 )
@@ -281,7 +268,8 @@ class _UserSession:
                 logger.info("WhatsApp Web loading for user %s — waiting up to 75s.", self.user_id)
 
                 WebDriverWait(self._driver, 75).until(
-                    lambda d: self._has_any(self._LOGGED_IN) or self._has_any(self._QR, min_size=100)
+                    lambda d: self._has_any(self._LOGGED_IN) or
+                              self._has_any(self._QR, min_size=100)
                 )
                 self._detect()
                 return  # success
@@ -299,7 +287,6 @@ class _UserSession:
                     except Exception:
                         pass
                     self._driver = None
-
                 if attempt < max_attempts:
                     self._kill_stale_chrome(profile)
                     time.sleep(3)
@@ -355,7 +342,6 @@ class _UserSession:
             return None
         try:
             def _cap():
-                # Click reload if QR expired
                 for sel in [
                     'button span[data-testid="refresh-l"]',
                     'div[data-testid="qrcode-reload-button"]',
@@ -374,11 +360,10 @@ class _UserSession:
                         if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
                             return el.screenshot_as_png
 
-                # Debug screenshot if QR not found
                 try:
-                    dbg = Path(f"/tmp/qr_miss_{self.user_id}.png")
-                    self._driver.save_screenshot(str(dbg))
-                    logger.info("QR not found for user %s — debug screenshot: %s", self.user_id, dbg)
+                    dbg = f"/tmp/qr_miss_{self.user_id}.png"
+                    self._driver.save_screenshot(dbg)
+                    logger.info("QR not found for user %s — screenshot: %s", self.user_id, dbg)
                 except Exception:
                     pass
                 return None
@@ -407,7 +392,7 @@ class _UserSession:
                     logger.info("QR scanned — user %s linked.", self.user_id)
                     return True
             except Exception as exc:
-                logger.warning("wait_for_scan check error for user %s: %s", self.user_id, exc)
+                logger.warning("wait_for_scan error for user %s: %s", self.user_id, exc)
                 return False
             await asyncio.sleep(1)
         return False
@@ -491,7 +476,8 @@ class _UserSession:
                         msg_box = els[0]
                         break
                 if not msg_box:
-                    all_ed = self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"]')
+                    all_ed = self._driver.find_elements(
+                        By.CSS_SELECTOR, 'div[contenteditable="true"]')
                     msg_box = all_ed[-1] if all_ed else None
                 if not msg_box:
                     raise Exception("Message box not found.")
@@ -509,10 +495,12 @@ class _UserSession:
 
             except Exception as exc:
                 try:
-                    self._driver.save_screenshot(f"/tmp/send_fail_{self.user_id}_{int(time.time())}.png")
+                    self._driver.save_screenshot(
+                        f"/tmp/send_fail_{self.user_id}_{int(time.time())}.png")
                 except Exception:
                     pass
-                logger.error("send_message error for user %s / '%s': %s", self.user_id, group_name, exc)
+                logger.error("send_message error user=%s group='%s': %s",
+                             self.user_id, group_name, exc)
                 return False
             finally:
                 try:
@@ -524,10 +512,7 @@ class _UserSession:
 # ── Registry ───────────────────────────────────────────────────────────────────
 
 class WhatsAppBot:
-    """
-    Process-wide registry of per-user _UserSession instances.
-    Each user gets their own dedicated Chrome — sessions never clash.
-    """
+    """Registry of per-user _UserSession instances — each user has their own Chrome."""
 
     _instance: Optional["WhatsAppBot"] = None
     _class_lock: threading.Lock = threading.Lock()
