@@ -81,7 +81,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://your-frontend.onrender.com", "*"],
+    allow_origins=["https://whatsapp-scheduler-frontend.onrender.com", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
