@@ -72,6 +72,7 @@ class _UserSession:
         self.is_logged_in = False
         self.last_error: Optional[str] = None
         self._driver: Optional[webdriver.Chrome] = None
+        self._driver_lock = threading.RLock()
         self._send_lock = threading.Lock()
         self._init_lock = asyncio.Lock()
 
@@ -103,25 +104,27 @@ class _UserSession:
         ]
 
     def _has_any(self, selectors: list[str], min_size: int = 0) -> bool:
-        if self._driver is None:
-            return False
-        for sel in selectors:
-            for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
-                if min_size <= 0:
-                    return True
-                if el.size.get("width", 0) >= min_size and el.size.get("height", 0) >= min_size:
-                    return True
+        with self._driver_lock:
+            if self._driver is None:
+                return False
+            for sel in selectors:
+                for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
+                    if min_size <= 0:
+                        return True
+                    if el.size.get("width", 0) >= min_size and el.size.get("height", 0) >= min_size:
+                        return True
         return False
 
     def _save_debug_screenshot(self, prefix: str) -> None:
-        if self._driver is None:
-            return
-        try:
-            dbg = Path(f"{prefix}_{self.user_id}_{int(time.time())}.png").resolve()
-            self._driver.save_screenshot(str(dbg))
-            logger.info("Saved debug screenshot for user %s: %s", self.user_id, dbg)
-        except Exception as exc:
-            logger.debug("Could not save screenshot for user %s: %s", self.user_id, exc)
+        with self._driver_lock:
+            if self._driver is None:
+                return
+            try:
+                dbg = Path(f"{prefix}_{self.user_id}_{int(time.time())}.png").resolve()
+                self._driver.save_screenshot(str(dbg))
+                logger.info("Saved debug screenshot for user %s: %s", self.user_id, dbg)
+            except Exception as exc:
+                logger.debug("Could not save screenshot for user %s: %s", self.user_id, exc)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -255,18 +258,19 @@ class _UserSession:
                 options = self._build_options(profile)
                 chromedriver_path = shutil.which("chromedriver")
                 service = Service(chromedriver_path) if chromedriver_path else Service(ChromeDriverManager().install())
-                self._driver = webdriver.Chrome(service=service, options=options)
-                self.last_error = None
+                with self._driver_lock:
+                    self._driver = webdriver.Chrome(service=service, options=options)
+                    self.last_error = None
 
-                handles = self._driver.window_handles
-                if len(handles) > 1:
-                    self._driver.switch_to.window(handles[-1])
+                    handles = self._driver.window_handles
+                    if len(handles) > 1:
+                        self._driver.switch_to.window(handles[-1])
 
-                self._driver.get("https://web.whatsapp.com")
-                logger.info("Chrome started for user %s (attempt %d) and waiting for WhatsApp Web.", self.user_id, attempt)
-                WebDriverWait(self._driver, 75).until(
-                    lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
-                )
+                    self._driver.get("https://web.whatsapp.com")
+                    logger.info("Chrome started for user %s (attempt %d) and waiting for WhatsApp Web.", self.user_id, attempt)
+                    WebDriverWait(self._driver, 75).until(
+                        lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
+                    )
                 self._detect()
                 return
 
@@ -274,12 +278,13 @@ class _UserSession:
                 last_exc = exc
                 self.last_error = str(exc)
                 logger.warning("Chrome start attempt %d/%d failed for user %s: %s", attempt, max_attempts, self.user_id, exc)
-                if self._driver:
-                    try:
-                        self._driver.quit()
-                    except Exception:
-                        pass
-                    self._driver = None
+                with self._driver_lock:
+                    if self._driver:
+                        try:
+                            self._driver.quit()
+                        except Exception:
+                            pass
+                        self._driver = None
 
                 if attempt < max_attempts:
                     self._kill_stale_chrome(profile)
@@ -292,30 +297,31 @@ class _UserSession:
         self.is_logged_in = False
 
     def _detect(self) -> None:
-        if self._driver is None:
-            return
-        try:
-            WebDriverWait(self._driver, 45).until(
-                lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
-            )
-            self.is_logged_in = self._has_any(self._logged_in_selectors())
-            if self.is_logged_in:
-                logger.info("Session restored for user %s.", self.user_id)
-                time.sleep(5)
-                self.last_error = None
-            else:
-                logger.info("QR visible for user %s.", self.user_id)
-                self.last_error = None
-        except Exception as exc:
-            logger.warning("Detect login failed for user %s: %s", self.user_id, exc)
-            self.last_error = "WhatsApp Web loaded slowly or QR was not visible yet."
-            self.is_logged_in = False
-            self._save_debug_screenshot("detect_fail")
-        finally:
+        with self._driver_lock:
+            if self._driver is None:
+                return
             try:
-                self._driver.switch_to.default_content()
-            except Exception:
-                pass
+                WebDriverWait(self._driver, 45).until(
+                    lambda d: self._has_any(self._logged_in_selectors()) or self._has_any(self._qr_selectors(), min_size=100)
+                )
+                self.is_logged_in = self._has_any(self._logged_in_selectors())
+                if self.is_logged_in:
+                    logger.info("Session restored for user %s.", self.user_id)
+                    time.sleep(5)
+                    self.last_error = None
+                else:
+                    logger.info("QR visible for user %s.", self.user_id)
+                    self.last_error = None
+            except Exception as exc:
+                logger.warning("Detect login failed for user %s: %s", self.user_id, exc)
+                self.last_error = "WhatsApp Web loaded slowly or QR was not visible yet."
+                self.is_logged_in = False
+                self._save_debug_screenshot("detect_fail")
+            finally:
+                try:
+                    self._driver.switch_to.default_content()
+                except Exception:
+                    pass
 
     async def stop(self) -> None:
         async with self._init_lock:
@@ -324,13 +330,14 @@ class _UserSession:
             self.last_error = None
 
     def _quit(self) -> None:
-        if self._driver:
-            try:
-                self._driver.quit()
-            except Exception as exc:
-                logger.warning("Quit error for user %s: %s", self.user_id, exc)
-            finally:
-                self._driver = None
+        with self._driver_lock:
+            if self._driver:
+                try:
+                    self._driver.quit()
+                except Exception as exc:
+                    logger.warning("Quit error for user %s: %s", self.user_id, exc)
+                finally:
+                    self._driver = None
 
     # ── QR ────────────────────────────────────────────────────────────────────
 
@@ -339,34 +346,35 @@ class _UserSession:
             return None
         try:
             def _cap():
-                try:
-                    WebDriverWait(self._driver, 30).until(
-                        lambda d: self._has_any(self._qr_selectors(), min_size=100) or self._has_any(self._logged_in_selectors())
-                    )
-                except Exception:
-                    logger.debug("QR wait timed out for user %s before capture.", self.user_id)
+                with self._driver_lock:
+                    try:
+                        WebDriverWait(self._driver, 30).until(
+                            lambda d: self._has_any(self._qr_selectors(), min_size=100) or self._has_any(self._logged_in_selectors())
+                        )
+                    except Exception:
+                        logger.debug("QR wait timed out for user %s before capture.", self.user_id)
 
-                for reload_sel in [
-                    'button span[data-testid="refresh-l"]',
-                    'div[data-testid="qrcode-reload-button"]',
-                    'button[aria-label="Reload"]',
-                ]:
-                    btns = self._driver.find_elements(By.CSS_SELECTOR, reload_sel)
-                    if btns:
-                        try:
-                            btns[0].click()
-                            time.sleep(2)
-                            break
-                        except Exception:
-                            continue
+                    for reload_sel in [
+                        'button span[data-testid="refresh-l"]',
+                        'div[data-testid="qrcode-reload-button"]',
+                        'button[aria-label="Reload"]',
+                    ]:
+                        btns = self._driver.find_elements(By.CSS_SELECTOR, reload_sel)
+                        if btns:
+                            try:
+                                btns[0].click()
+                                time.sleep(2)
+                                break
+                            except Exception:
+                                continue
 
-                for sel in self._qr_selectors():
-                    for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
-                        if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
-                            return el.screenshot_as_png
+                    for sel in self._qr_selectors():
+                        for el in self._driver.find_elements(By.CSS_SELECTOR, sel):
+                            if el.size.get("width", 0) > 100 and el.size.get("height", 0) > 100:
+                                return el.screenshot_as_png
 
-                self._save_debug_screenshot("qr_missing")
-                return None
+                    self._save_debug_screenshot("qr_missing")
+                    return None
 
             png = await asyncio.to_thread(_cap)
             if png is None:
@@ -387,12 +395,18 @@ class _UserSession:
         deadline = time.time() + timeout
         while time.time() < deadline:
             def _check():
-                return self._has_any(self._logged_in_selectors())
-            if await asyncio.to_thread(_check):
-                self.is_logged_in = True
-                self.last_error = None
-                logger.info("QR scanned — user %s linked.", self.user_id)
-                return True
+                with self._driver_lock:
+                    return self._has_any(self._logged_in_selectors())
+            try:
+                if await asyncio.to_thread(_check):
+                    self.is_logged_in = True
+                    self.last_error = None
+                    logger.info("QR scanned — user %s linked.", self.user_id)
+                    return True
+            except Exception as exc:
+                logger.warning("wait_for_scan check failed for user %s: %s", self.user_id, exc)
+                self.last_error = "Lost connection to the browser. Please refresh the QR and try again."
+                return False
             await asyncio.sleep(1)
         return False
 
@@ -406,109 +420,110 @@ class _UserSession:
 
     def _sync_send(self, group_name: str, message: str) -> bool:
         with self._send_lock:
-            try:
-                handles = self._driver.window_handles
-                if len(handles) > 1:
-                    self._driver.switch_to.window(handles[-1])
-
+            with self._driver_lock:
                 try:
-                    self._driver.execute_script(
-                        "document.querySelectorAll('span[data-testid=\"x-alt\"]')"
-                        ".forEach(b => { const c = b.closest('[role=\"alert\"]') || "
-                        "b.parentElement.parentElement; if (c) c.remove(); });"
-                    )
-                except Exception:
-                    pass
-                time.sleep(1)
+                    handles = self._driver.window_handles
+                    if len(handles) > 1:
+                        self._driver.switch_to.window(handles[-1])
 
-                search = None
-                for sel in [
-                    'input[data-tab="3"]',
-                    'input[title="Search or start new chat"]',
-                    'div[contenteditable="true"][data-tab="3"]',
-                    'div[data-testid="search-input"]',
-                ]:
-                    els = self._driver.find_elements(By.CSS_SELECTOR, sel)
-                    if els:
-                        search = els[0]
-                        break
-
-                if not search:
-                    raise Exception("Search box not found.")
-
-                search.click()
-                time.sleep(0.5)
-                search.clear()
-                search.send_keys(group_name)
-                time.sleep(4)
-
-                matched = False
-                for item in self._driver.find_elements(By.CSS_SELECTOR, 'span[title]'):
                     try:
-                        if item.text.strip() == group_name:
-                            item.click()
-                            matched = True
-                            break
+                        self._driver.execute_script(
+                            "document.querySelectorAll('span[data-testid=\"x-alt\"]')"
+                            ".forEach(b => { const c = b.closest('[role=\"alert\"]') || "
+                            "b.parentElement.parentElement; if (c) c.remove(); });"
+                        )
                     except Exception:
-                        continue
+                        pass
+                    time.sleep(1)
 
-                if not matched:
+                    search = None
+                    for sel in [
+                        'input[data-tab="3"]',
+                        'input[title="Search or start new chat"]',
+                        'div[contenteditable="true"][data-tab="3"]',
+                        'div[data-testid="search-input"]',
+                    ]:
+                        els = self._driver.find_elements(By.CSS_SELECTOR, sel)
+                        if els:
+                            search = els[0]
+                            break
+
+                    if not search:
+                        raise Exception("Search box not found.")
+
+                    search.click()
+                    time.sleep(0.5)
+                    search.clear()
+                    search.send_keys(group_name)
+                    time.sleep(4)
+
+                    matched = False
                     for item in self._driver.find_elements(By.CSS_SELECTOR, 'span[title]'):
                         try:
-                            if group_name.lower() in item.text.lower():
+                            if item.text.strip() == group_name:
                                 item.click()
                                 matched = True
                                 break
                         except Exception:
                             continue
 
-                if not matched:
-                    raise Exception(f"Group '{group_name}' not found.")
+                    if not matched:
+                        for item in self._driver.find_elements(By.CSS_SELECTOR, 'span[title]'):
+                            try:
+                                if group_name.lower() in item.text.lower():
+                                    item.click()
+                                    matched = True
+                                    break
+                            except Exception:
+                                continue
 
-                time.sleep(3)
+                    if not matched:
+                        raise Exception(f"Group '{group_name}' not found.")
 
-                msg_box = None
-                for sel in [
-                    'div[contenteditable="true"][data-tab="10"]',
-                    'div[data-testid="conversation-compose-box-input"]',
-                    'div[contenteditable="true"][data-id="message-container"]',
-                ]:
-                    els = self._driver.find_elements(By.CSS_SELECTOR, sel)
-                    if els:
-                        msg_box = els[0]
-                        break
+                    time.sleep(3)
 
-                if not msg_box:
-                    all_editables = self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"]')
-                    msg_box = all_editables[-1] if all_editables else None
+                    msg_box = None
+                    for sel in [
+                        'div[contenteditable="true"][data-tab="10"]',
+                        'div[data-testid="conversation-compose-box-input"]',
+                        'div[contenteditable="true"][data-id="message-container"]',
+                    ]:
+                        els = self._driver.find_elements(By.CSS_SELECTOR, sel)
+                        if els:
+                            msg_box = els[0]
+                            break
 
-                if not msg_box:
-                    raise Exception("Message box not found.")
+                    if not msg_box:
+                        all_editables = self._driver.find_elements(By.CSS_SELECTOR, 'div[contenteditable="true"]')
+                        msg_box = all_editables[-1] if all_editables else None
 
-                msg_box.click()
-                time.sleep(0.5)
-                for line in message.split("\n"):
-                    msg_box.send_keys(line)
-                    msg_box.send_keys(Keys.SHIFT + Keys.ENTER)
-                time.sleep(0.5)
-                msg_box.send_keys(Keys.ENTER)
-                time.sleep(2)
+                    if not msg_box:
+                        raise Exception("Message box not found.")
 
-                logger.info("Message sent to '%s' for user %s.", group_name, self.user_id)
-                return True
+                    msg_box.click()
+                    time.sleep(0.5)
+                    for line in message.split("\n"):
+                        msg_box.send_keys(line)
+                        msg_box.send_keys(Keys.SHIFT + Keys.ENTER)
+                    time.sleep(0.5)
+                    msg_box.send_keys(Keys.ENTER)
+                    time.sleep(2)
 
-            except Exception as exc:
-                try:
-                    self._driver.save_screenshot(str(Path(f"send_fail_{self.user_id}_{int(time.time())}.png").resolve()))
-                except Exception:
-                    pass
-                logger.error("send_message error for user %s / group '%s': %s", self.user_id, group_name, exc, exc_info=True)
-                return False
-            finally:
-                try:
-                    self._driver.switch_to.default_content()
-                except Exception:
-                    pass
+                    logger.info("Message sent to '%s' for user %s.", group_name, self.user_id)
+                    return True
+
+                except Exception as exc:
+                    try:
+                        self._driver.save_screenshot(str(Path(f"send_fail_{self.user_id}_{int(time.time())}.png").resolve()))
+                    except Exception:
+                        pass
+                    logger.error("send_message error for user %s / group '%s': %s", self.user_id, group_name, exc, exc_info=True)
+                    return False
+                finally:
+                    try:
+                        self._driver.switch_to.default_content()
+                    except Exception:
+                        pass
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────

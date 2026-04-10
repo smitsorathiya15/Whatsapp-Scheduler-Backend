@@ -102,6 +102,12 @@ class WhatsAppRouter:
             await self._persist_linked(db, current_user, True)
             return ResponseHelper.success({"linked": True}, key="whatsapp_linked_success")
 
+        if session.last_error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error_key": "bad_request_error", "reason": session.last_error},
+            )
+
         raise HTTPException(
             status_code=status.HTTP_408_REQUEST_TIMEOUT,
             detail={"error_key": "bad_request_error", "reason": "QR scan timed out. Refresh and try again."},
