@@ -40,6 +40,9 @@ def _find_chrome_binary() -> Optional[str]:
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
         "/snap/bin/chromium",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
     ]
     for path in candidates:
         if path and Path(path).exists():
@@ -177,8 +180,10 @@ class _UserSession:
         options.add_argument("--disable-dev-shm-usage")
 
         # Process model — avoids zygote/renderer crash in constrained containers
-        options.add_argument("--single-process")
-        options.add_argument("--no-zygote")
+        # Note: --single-process crashes Chrome on Windows.
+        if os.name != "nt":
+            options.add_argument("--single-process")
+            options.add_argument("--no-zygote")
 
         # No GPU in containers
         options.add_argument("--disable-gpu")
@@ -211,7 +216,10 @@ class _UserSession:
         # Headless — use LEGACY --headless flag, NOT --headless=new
         # Debian chromium package has stability issues with --headless=new in containers
         if getattr(settings, "WA_HEADLESS", True):
-            options.add_argument("--headless")          # legacy headless — stable on Debian
+            if os.name == "nt":
+                options.add_argument("--headless=new")
+            else:
+                options.add_argument("--headless")          # legacy headless — stable on Debian
             options.add_argument("--window-size=1280,900")
             options.add_argument("--hide-scrollbars")
 
@@ -244,7 +252,7 @@ class _UserSession:
         for attempt in range(1, max_attempts + 1):
             try:
                 options  = self._build_options(profile)
-                log_path = f"/tmp/chromedriver_{self.user_id}.log"
+                log_path = str(profile / f"chromedriver_{self.user_id}.log")
 
                 if chromedriver:
                     service = Service(chromedriver, log_path=log_path)
@@ -361,7 +369,7 @@ class _UserSession:
                             return el.screenshot_as_png
 
                 try:
-                    dbg = f"/tmp/qr_miss_{self.user_id}.png"
+                    dbg = str(self._profile_path / f"qr_miss_{self.user_id}.png")
                     self._driver.save_screenshot(dbg)
                     logger.info("QR not found for user %s — screenshot: %s", self.user_id, dbg)
                 except Exception:
@@ -424,12 +432,14 @@ class _UserSession:
 
                 search = None
                 for sel in [
+                    'div[contenteditable="true"][data-tab="3"]',
+                    'div[contenteditable="true"][title="Search input textbox"]',
                     'input[data-tab="3"]',
                     'input[title="Search or start new chat"]',
-                    'div[contenteditable="true"][data-tab="3"]',
                     'div[data-testid="search-input"]',
                 ]:
                     els = self._driver.find_elements(By.CSS_SELECTOR, sel)
+                    els = [e for e in els if e.is_displayed()]
                     if els:
                         search = els[0]
                         break
@@ -437,9 +447,18 @@ class _UserSession:
                 if not search:
                     raise Exception("Search box not found.")
 
-                search.click()
+                try:
+                    search.click()
+                except Exception:
+                    self._driver.execute_script("arguments[0].click();", search)
                 time.sleep(0.5)
-                search.clear()
+                
+                try:
+                    search.clear()
+                except Exception:
+                    search.send_keys(Keys.CONTROL + "a")
+                    search.send_keys(Keys.BACKSPACE)
+                    
                 search.send_keys(group_name)
                 time.sleep(4)
 
@@ -469,21 +488,28 @@ class _UserSession:
                 msg_box = None
                 for sel in [
                     'div[contenteditable="true"][data-tab="10"]',
+                    'div[contenteditable="true"][title="Type a message"]',
                     'div[data-testid="conversation-compose-box-input"]',
                 ]:
                     els = self._driver.find_elements(By.CSS_SELECTOR, sel)
+                    els = [e for e in els if e.is_displayed()]
                     if els:
                         msg_box = els[0]
                         break
                 if not msg_box:
                     all_ed = self._driver.find_elements(
                         By.CSS_SELECTOR, 'div[contenteditable="true"]')
+                    all_ed = [e for e in all_ed if e.is_displayed()]
                     msg_box = all_ed[-1] if all_ed else None
                 if not msg_box:
                     raise Exception("Message box not found.")
 
-                msg_box.click()
+                try:
+                    msg_box.click()
+                except Exception:
+                    self._driver.execute_script("arguments[0].click();", msg_box)
                 time.sleep(0.5)
+                
                 for line in message.split("\n"):
                     msg_box.send_keys(line)
                     msg_box.send_keys(Keys.SHIFT + Keys.ENTER)
@@ -496,7 +522,7 @@ class _UserSession:
             except Exception as exc:
                 try:
                     self._driver.save_screenshot(
-                        f"/tmp/send_fail_{self.user_id}_{int(time.time())}.png")
+                        str(self._profile_path / f"send_fail_{self.user_id}_{int(time.time())}.png"))
                 except Exception:
                     pass
                 logger.error("send_message error user=%s group='%s': %s",
