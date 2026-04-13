@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -18,9 +19,16 @@ from app.router.user.templates.templates import router as templates_router
 from app.router.user.schedules.schedules import router as schedules_router
 from app.router.user.whatsapp.whatsapp import router as whatsapp_router
 
-from app.services.scheduler.wa_scheduler import WAScheduler
-from app.services.whatsapp.bot import WhatsAppBot
 from app.utils.helper import ResponseHelper
+
+# ── Serverless detection ──────────────────────────────────────────────
+# Vercel sets VERCEL=1 and AWS_LAMBDA_FUNCTION_NAME automatically.
+# When running in serverless, skip Chrome/Scheduler (they need persistent processes).
+IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+
+if not IS_SERVERLESS:
+    from app.services.scheduler.wa_scheduler import WAScheduler
+    from app.services.whatsapp.bot import WhatsAppBot
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -37,12 +45,19 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting %s [%s]", settings.APP_NAME, settings.APP_ENV)
     await DatabaseManager.get_instance().init_db()
     logger.info("✅ Database tables ready")
-    # WhatsApp sessions are started on-demand (when user visits Link page or scheduler fires)
-    WAScheduler.get_instance().start()
-    logger.info("✅ Scheduler started")
+
+    if not IS_SERVERLESS:
+        # WhatsApp sessions are started on-demand (when user visits Link page or scheduler fires)
+        WAScheduler.get_instance().start()
+        logger.info("✅ Scheduler started")
+    else:
+        logger.info("⚡ Serverless mode — skipping scheduler & WhatsApp bot")
+
     yield
-    WAScheduler.get_instance().stop()
-    WhatsAppBot.get_instance().close_all()   # gracefully quit all per-user Chrome instances
+
+    if not IS_SERVERLESS:
+        WAScheduler.get_instance().stop()
+        WhatsAppBot.get_instance().close_all()   # gracefully quit all per-user Chrome instances
     logger.info("👋 Shutting down")
 
 

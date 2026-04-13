@@ -1,5 +1,7 @@
 """WhatsApp session endpoints — status, QR code, wait-for-scan, unlink."""
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,8 @@ from app.schemas.response import ApiResponse
 from app.services.jwt.auth import AuthService
 from app.services.whatsapp.bot import WhatsAppBot
 from app.utils.helper import ResponseHelper
+
+IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 
 _auth = [Depends(AuthService.get_current_user)]
 
@@ -30,6 +34,19 @@ class WhatsAppRouter:
         self.router.add_api_route("/wait-scan", self.wait_scan, methods=["POST"], response_model=ApiResponse)
         self.router.add_api_route("/unlink",    self.unlink,    methods=["POST"], response_model=ApiResponse)
 
+    @staticmethod
+    def _serverless_guard() -> None:
+        """Raise 503 if running in serverless (Vercel) — WhatsApp needs persistent Chrome."""
+        if IS_SERVERLESS:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error_key": "service_unavailable",
+                    "reason": "WhatsApp features are not available in serverless mode. "
+                              "Deploy on Railway, Render, or a VPS for full functionality.",
+                },
+            )
+
     # ── Status ─────────────────────────────────────────────────────────────────
 
     async def status(
@@ -40,6 +57,7 @@ class WhatsAppRouter:
         Return the live WhatsApp session state for this user only.
         Uses the in-memory session registry — does NOT start Chrome.
         """
+        self._serverless_guard()
         bot     = WhatsAppBot.get_instance()
         session = bot.get_existing_session(current_user.id)
         linked  = session is not None and session.is_logged_in
@@ -56,6 +74,7 @@ class WhatsAppRouter:
         Ensure a Chrome session exists for this user and return the QR code.
         If the saved profile is still logged in, returns linked=True immediately.
         """
+        self._serverless_guard()
         bot     = WhatsAppBot.get_instance()
         session = await bot.session_for(current_user.id)   # starts Chrome if needed
 
@@ -85,6 +104,7 @@ class WhatsAppRouter:
         db: AsyncSession = Depends(DatabaseDependency.get_db),
     ) -> ApiResponse:
         """Long-poll until the user scans the QR (up to 120 s)."""
+        self._serverless_guard()
         bot     = WhatsAppBot.get_instance()
         session = bot.get_existing_session(current_user.id)
 
@@ -121,6 +141,7 @@ class WhatsAppRouter:
         db: AsyncSession = Depends(DatabaseDependency.get_db),
     ) -> ApiResponse:
         """Close this user's Chrome session and mark them as unlinked in the DB."""
+        self._serverless_guard()
         bot = WhatsAppBot.get_instance()
         await bot.remove_session(current_user.id)
         await self._persist_linked(db, current_user, False)

@@ -27,13 +27,13 @@ class Settings(BaseSettings):
     JWT_EXPIRES_MINUTES: int
 
     # ── WhatsApp ──────────────────────────────────────────────
-    WA_PROFILE_DIR: str
+    WA_PROFILE_DIR: str = "/tmp/wa_profile"
     WA_HEADLESS: bool = True
     WA_CHROME_BINARY: str | None = None
 
     # ── Scheduler ─────────────────────────────────────────────
-    SCHEDULER_INTERVAL_SECONDS: int
-    SCHEDULER_TIMEZONE: str
+    SCHEDULER_INTERVAL_SECONDS: int = 60
+    SCHEDULER_TIMEZONE: str = "Asia/Kolkata"
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_PATH),

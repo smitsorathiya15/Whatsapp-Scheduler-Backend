@@ -30,4 +30,8 @@ logs/
 .DS_Store
 Thumbs.db
 
-wa_profile/
+# Vercel
+.vercel/
+
+# IDE
+.idea/
