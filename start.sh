@@ -5,7 +5,8 @@
 set -e
 
 echo "Starting WhatsApp sidecar on port 3001…"
-cd wa-service && node index.js &
+cd wa-service
+node index.js &
 WA_PID=$!
 cd ..
 
