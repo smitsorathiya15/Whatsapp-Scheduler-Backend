@@ -40,3 +40,4 @@ Thumbs.db
 wa-service/node_modules/
 wa-service/.wwebjs_auth/
 wa-service/.wwebjs_cache/
+wa-service/.puppeteer-cache/
