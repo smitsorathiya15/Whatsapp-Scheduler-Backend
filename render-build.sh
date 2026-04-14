@@ -7,3 +7,6 @@ pip install -r requirements.txt
 
 echo "=== Installing Node.js WhatsApp service dependencies ==="
 cd wa-service && npm install
+
+echo "=== Installing Chromium for Puppeteer ==="
+npx puppeteer browsers install chrome
