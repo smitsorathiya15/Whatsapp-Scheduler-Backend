@@ -13,6 +13,12 @@ const QRCode = require("qrcode");
 const app = express();
 app.use(express.json());
 
+// Log incoming HTTP requests from the Python backend
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+  next();
+});
+
 const PORT = process.env.WA_SERVICE_PORT || 3001;
 const AUTH_DIR = process.env.WA_AUTH_DIR || "./.wwebjs_auth";
 

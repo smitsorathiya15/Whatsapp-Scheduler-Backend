@@ -65,7 +65,7 @@ class WhatsAppRouter:
             return ResponseHelper.success({"linked": True, "qr": None}, key="whatsapp_already_linked")
 
         # Sidecar reported a hard error
-        if session.last_error and not session.is_started:
+        if session.last_error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={"error_key": "service_unavailable", "reason": session.last_error},
