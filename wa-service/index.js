@@ -1,10 +1,7 @@
-/**
- * WhatsApp Web.js sidecar — HTTP API consumed by the Python FastAPI backend.
- *
- * Each user gets their own wwebjs Client with LocalAuth for session persistence.
- * Endpoints mirror the existing Python bot.py interface so the FastAPI router
- * and scheduler need zero changes.
- */
+// Prevent unhandled rejections (like 'auth timeout' from wwebjs) from crashing the server
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
 
 const express = require("express");
 const { Client, LocalAuth } = require("whatsapp-web.js");
@@ -92,6 +89,8 @@ async function initClient(userId) {
         clientId: userId,
         dataPath: AUTH_DIR,
       }),
+      authTimeoutMs: 120000,
+      qrMaxRetries: 5,
       puppeteer: {
         headless: true,
         args: puppeteerArgs(),
@@ -257,6 +256,6 @@ app.post("/session/:userId/destroy", async (req, res) => {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`WhatsApp sidecar running on port ${PORT}`);
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`WhatsApp sidecar running internally on 127.0.0.1:${PORT}`);
 });
