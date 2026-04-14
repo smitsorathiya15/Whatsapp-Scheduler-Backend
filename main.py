@@ -34,7 +34,7 @@ logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
 )
-logging.getLogger("selenium").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -128,3 +128,4 @@ async def root():
 @app.get("/keepalive", tags=["Health"])
 async def keepalive():
     return ResponseHelper.success({"status": "alive"}, key="keepalive_success")
+

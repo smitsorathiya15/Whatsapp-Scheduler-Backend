@@ -18,9 +18,8 @@ bcrypt==3.2.2
 python-jose[cryptography]>=3.3.0
 
 # ── WhatsApp automation ───────────────────────────────────────
-selenium>=4.20.0
-webdriver-manager>=4.0.1
-pillow>=10.3.0
+# Node.js sidecar (wa-service/) handles browser automation.
+# Python only needs httpx (already listed below) to call it.
 
 # ── Scheduler ─────────────────────────────────────────────────
 apscheduler>=3.10.4

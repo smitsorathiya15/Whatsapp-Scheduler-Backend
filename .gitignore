@@ -35,3 +35,8 @@ Thumbs.db
 
 # IDE
 .idea/
+
+# Node.js sidecar
+wa-service/node_modules/
+wa-service/.wwebjs_auth/
+wa-service/.wwebjs_cache/

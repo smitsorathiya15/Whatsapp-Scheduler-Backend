@@ -1,0 +1,14 @@
+{
+  "name": "wa-service",
+  "version": "1.0.0",
+  "description": "WhatsApp Web.js sidecar service for FastAPI backend",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.26.0",
+    "express": "^4.21.0",
+    "qrcode": "^1.5.4"
+  }
+}

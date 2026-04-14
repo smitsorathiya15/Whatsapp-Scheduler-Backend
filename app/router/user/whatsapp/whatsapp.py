@@ -82,7 +82,7 @@ class WhatsAppRouter:
             await self._persist_linked(db, current_user, True)
             return ResponseHelper.success({"linked": True, "qr": None}, key="whatsapp_already_linked")
 
-        if session._driver is None and session.last_error:
+        if not session.is_started and session.last_error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={"error_key": "bad_request_error", "reason": session.last_error},
