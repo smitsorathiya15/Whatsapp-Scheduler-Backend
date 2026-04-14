@@ -9,6 +9,7 @@
 const express = require("express");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const QRCode = require("qrcode");
+const puppeteer = require("puppeteer");
 
 const app = express();
 app.use(express.json());
@@ -94,6 +95,7 @@ async function initClient(userId) {
       puppeteer: {
         headless: true,
         args: puppeteerArgs(),
+        executablePath: puppeteer.executablePath(),
       },
     });
 

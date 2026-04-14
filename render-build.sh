@@ -9,8 +9,7 @@ echo "=== Installing Node.js WhatsApp sidecar dependencies ==="
 cd wa-service
 npm install
 
-echo "=== Installing Chromium for Puppeteer ==="
-npx puppeteer browsers install chrome
+
 
 cd ..
 echo "=== Build complete ==="
